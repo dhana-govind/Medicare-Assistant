@@ -1,0 +1,11 @@
+patient_id,name,age,sex,admission_date,discharge_date,primary_diagnosis,secondary_diagnoses,hospital_course,medications,follow_up
+P001,Emily Carter,45,Male,2025-02-01,2025-02-02,Heart Failure Exacerbation,"Hypertension, Diabetes",Treated with IV diuretics and oxygen. Improved over 3 days.,"Furosemide, Lisinopril, Metoprolol",Cardiology in 1 week
+P002,Daniel Thompson,52,Female,2025-02-02,2025-02-03,Community-Acquired Pneumonia,Asthma,"IV antibiotics started, fever resolved by day 2.","Azithromycin, Ceftriaxone",PCP in 3 days
+P003,Olivia Patel,67,Male,2025-02-03,2025-02-04,Acute Kidney Injury,Hypertension,Hydration and monitoring; creatinine trended down.,"IV Fluids, Lisinopril",Renal clinic in 1 week
+P004,Peter Paul,34,Female,2025-02-04,2025-02-05,Asthma Exacerbation,Allergic Rhinitis,Bronchodilators and steroids given; symptoms improved.,"Albuterol, Prednisone",Pulmonology in 2 weeks
+P005,Royce Samuel,58,Male,2025-02-05,2025-02-06,Uncontrolled Diabetes,CKD Stage 2,Insulin therapy optimized; glucose stabilized.,"Insulin, Metformin",Endocrinology in 1 week
+P006,Kathy John,73,Male,2025-02-06,2025-02-07,COPD Exacerbation,Heart Failure,Steroids and bronchodilators administered; breathing improved.,"Prednisone, Tiotropium",Pulmonology in 1 week
+P007,Sammy Philips,49,Female,2025-02-07,2025-02-08,Gastroenteritis,Dehydration,"IV fluids administered, nausea resolved.","Ondansetron, ORS",PCP in 5 days
+P008,Bishop Parker,61,Male,2025-02-08,2025-02-09,Hypertensive Emergency,Hyperlipidemia,BP managed with IV antihypertensives; stabilized.,"Labetalol, Amlodipine",PCP in 1 week
+P009,William Leon,39,Female,2025-02-09,2025-02-10,Anemia,Iron Deficiency,"Iron infusion given, hemoglobin improved.",Iron Supplement,Hematology in 2 weeks
+P010,Ella Saun,70,Male,2025-02-10,2025-02-11,Atrial Fibrillation with RVR,Hypertension,Rate control achieved with beta-blockers.,"Metoprolol, Apixaban",Cardiology in 1 week

@@ -1,0 +1,469 @@
+"""
+MedQuery AI - Healthcare Q&A Assistant with Google ADK Web UI
+One-Day Capstone Project
+
+This implementation uses Google ADK's built-in Web UI instead of FastAPI.
+The ADK handles the web interface, routing, and session management automatically.
+"""
+
+import os
+from datetime import datetime
+from typing import Dict, List, Optional
+from dataclasses import dataclass
+from enum import Enum
+
+# Google ADK imports
+from google import genai
+from google.genai import types
+from google.genai.adk import agent, web_ui
+
+# Initialize Gemini client
+client = genai.Client(api_key=os.environ.get('GOOGLE_API_KEY'))
+
+
+# ============================================================================
+# DATA MODELS
+# ============================================================================
+
+class QuestionType(Enum):
+    """Types of medical questions"""
+    MEDICATION = "medication"
+    SYMPTOMS = "symptoms"
+    DIET = "diet"
+    ACTIVITY = "activity"
+    WOUND_CARE = "wound_care"
+    EMERGENCY = "emergency"
+    GENERAL = "general"
+
+
+@dataclass
+class PatientContext:
+    """Store patient discharge context"""
+    patient_id: str
+    discharge_diagnosis: str
+    medications: List[str]
+    restrictions: List[str]
+    follow_up_date: str
+    emergency_contacts: List[str]
+    
+    def to_context_string(self) -> str:
+        """Format context for LLM prompts"""
+        return f"""
+Patient Information:
+- Diagnosis: {self.discharge_diagnosis}
+- Medications: {', '.join(self.medications) if self.medications else 'None prescribed'}
+- Restrictions: {', '.join(self.restrictions) if self.restrictions else 'None specified'}
+- Follow-up Date: {self.follow_up_date if self.follow_up_date else 'Not scheduled'}
+- Emergency Contacts: {', '.join(self.emergency_contacts) if self.emergency_contacts else 'None provided'}
+"""
+
+
+# ============================================================================
+# SAFETY GUARDRAILS
+# ============================================================================
+
+class MedicalSafetyGuard:
+    """Safety checks for medical questions"""
+    
+    EMERGENCY_KEYWORDS = [
+        "chest pain", "can't breathe", "can not breathe", "severe bleeding",
+        "suicide", "overdose", "stroke", "heart attack", "unconscious",
+        "severe pain", "cannot move", "numbness", "vision loss"
+    ]
+    
+    @staticmethod
+    def check_emergency(question: str) -> bool:
+        """Check if question indicates emergency"""
+        question_lower = question.lower()
+        return any(keyword in question_lower for keyword in MedicalSafetyGuard.EMERGENCY_KEYWORDS)
+    
+    @staticmethod
+    def get_emergency_response() -> str:
+        """Standard emergency response"""
+        return """
+🚨 EMERGENCY SITUATION DETECTED
+
+This may be a medical emergency. Please:
+
+1. **Call 911 immediately** (US) or your local emergency number
+2. **Do NOT wait** for a response from this system
+3. If you're experiencing:
+   - Chest pain or pressure
+   - Difficulty breathing
+   - Severe bleeding
+   - Loss of consciousness
+   - Stroke symptoms (facial drooping, arm weakness, speech difficulty)
+   
+   **SEEK IMMEDIATE MEDICAL ATTENTION**
+
+This is an AI assistant and cannot provide emergency medical care.
+Your safety is the top priority - please call emergency services now.
+        """.strip()
+    
+    @staticmethod
+    def classify_question(question: str) -> QuestionType:
+        """Classify the type of medical question"""
+        question_lower = question.lower()
+        
+        if any(word in question_lower for word in ["medication", "medicine", "pill", "dose", "prescription"]):
+            return QuestionType.MEDICATION
+        elif any(word in question_lower for word in ["symptom", "pain", "fever", "feeling", "nausea"]):
+            return QuestionType.SYMPTOMS
+        elif any(word in question_lower for word in ["eat", "diet", "food", "drink", "nutrition"]):
+            return QuestionType.DIET
+        elif any(word in question_lower for word in ["exercise", "activity", "walk", "drive", "work"]):
+            return QuestionType.ACTIVITY
+        elif any(word in question_lower for word in ["wound", "incision", "bandage", "stitches", "dressing"]):
+            return QuestionType.WOUND_CARE
+        else:
+            return QuestionType.GENERAL
+
+
+# ============================================================================
+# MEDQUERY AGENT WITH ADK
+# ============================================================================
+
+# Define the agent's behavior and configuration
+AGENT_NAME = "medquery_assistant"
+
+# System instructions for the agent
+SYSTEM_INSTRUCTION = """You are MedQuery AI, a helpful medical assistant designed to help patients understand their discharge instructions and answer post-discharge questions.
+
+Your primary responsibilities:
+1. Answer patient questions about their medications, symptoms, diet, activity restrictions, and wound care
+2. Use simple, patient-friendly language (6th grade reading level)
+3. Always reference the patient's specific diagnosis and medications when relevant
+4. Be warm, reassuring, and empathetic while maintaining medical accuracy
+5. Encourage patients to contact their healthcare provider when appropriate
+
+Important guidelines:
+- NEVER provide new diagnoses or contradict physician instructions
+- ALWAYS encourage patients to call their doctor if symptoms worsen or if they're uncertain
+- Include practical, actionable advice
+- Mention warning signs that require immediate medical attention
+- Be clear about when to seek emergency care vs. routine follow-up
+
+Response format:
+1. Address the question directly
+2. Provide context relevant to their specific condition
+3. Give practical advice
+4. Mention when to contact their doctor
+5. End with appropriate disclaimer
+
+CRITICAL DISCLAIMER:
+Always end responses with: "This information is for educational purposes only. Please contact your healthcare provider if you have specific concerns about your condition."
+"""
+
+
+# Agent state to track patient context
+agent_state = {}
+
+
+def get_patient_context(session_id: str) -> Optional[PatientContext]:
+    """Retrieve patient context from agent state"""
+    return agent_state.get(session_id)
+
+
+def set_patient_context(session_id: str, context: PatientContext):
+    """Store patient context in agent state"""
+    agent_state[session_id] = context
+
+
+# ============================================================================
+# TOOL: WEB SEARCH (Optional enhancement)
+# ============================================================================
+
+def search_medical_info(query: str) -> str:
+    """
+    Search for current medical information
+    In production, this would use a real medical database or search API
+    For demo, we'll return a placeholder
+    """
+    return f"Searching medical databases for: {query}..."
+
+
+# ============================================================================
+# MAIN AGENT FUNCTION
+# ============================================================================
+
+@agent(
+    model="gemini-2.0-flash-exp",
+    system_instruction=SYSTEM_INSTRUCTION,
+    tools=[search_medical_info]  # Optional: add web search tool
+)
+def medquery_agent(prompt: str, *, context: types.ExecutionContext) -> str:
+    """
+    Main agent function that processes patient questions
+    
+    The @agent decorator handles:
+    - LLM integration with Gemini
+    - Conversation history management
+    - Tool calling (if needed)
+    - Response generation
+    """
+    
+    # Get session ID from context
+    session_id = context.session_id
+    
+    # Check if this is a setup message (patient providing their info)
+    if "SETUP:" in prompt:
+        return handle_patient_setup(prompt, session_id)
+    
+    # Get patient context
+    patient_context = get_patient_context(session_id)
+    
+    if not patient_context:
+        return """
+👋 Welcome to MedQuery AI!
+
+Before we start, I need some information about your discharge:
+
+Please provide the following (you can paste all at once):
+- Diagnosis: [Your diagnosis]
+- Medications: [List your medications]
+- Restrictions: [Any dietary or activity restrictions]
+- Follow-up Date: [Your next appointment]
+
+Example format:
+Diagnosis: Type 2 Diabetes
+Medications: Metformin 500mg twice daily, Lisinopril 10mg daily
+Restrictions: Limit sugar intake, Monitor blood glucose
+Follow-up Date: 2025-12-01
+
+Once you provide this, I can answer your specific questions!
+"""
+    
+    # Safety check for emergencies
+    safety_guard = MedicalSafetyGuard()
+    if safety_guard.check_emergency(prompt):
+        return safety_guard.get_emergency_response()
+    
+    # Classify question type
+    question_type = safety_guard.classify_question(prompt)
+    
+    # Build context-aware prompt
+    enhanced_prompt = f"""
+{patient_context.to_context_string()}
+
+Question Type: {question_type.value}
+
+Patient Question: {prompt}
+
+Please provide a helpful, accurate, and patient-friendly answer that:
+1. Addresses their specific condition ({patient_context.discharge_diagnosis})
+2. References their medications if relevant
+3. Uses simple language
+4. Includes practical advice
+5. Mentions when to contact their doctor
+6. Ends with the educational disclaimer
+"""
+    
+    # The @agent decorator automatically handles:
+    # - Sending to Gemini
+    # - Managing conversation history
+    # - Calling tools if needed
+    # - Returning the formatted response
+    
+    return enhanced_prompt
+
+
+def handle_patient_setup(prompt: str, session_id: str) -> str:
+    """Parse and store patient information"""
+    
+    try:
+        # Parse the setup information
+        lines = prompt.replace("SETUP:", "").strip().split("\n")
+        
+        diagnosis = ""
+        medications = []
+        restrictions = []
+        follow_up_date = ""
+        emergency_contacts = []
+        
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            if line.lower().startswith("diagnosis:"):
+                diagnosis = line.split(":", 1)[1].strip()
+            elif line.lower().startswith("medication"):
+                med_text = line.split(":", 1)[1].strip()
+                medications = [m.strip() for m in med_text.split(",") if m.strip()]
+            elif line.lower().startswith("restriction"):
+                rest_text = line.split(":", 1)[1].strip()
+                restrictions = [r.strip() for r in rest_text.split(",") if r.strip()]
+            elif line.lower().startswith("follow"):
+                follow_up_date = line.split(":", 1)[1].strip()
+            elif line.lower().startswith("emergency") or line.lower().startswith("contact"):
+                contact_text = line.split(":", 1)[1].strip()
+                emergency_contacts = [c.strip() for c in contact_text.split(",") if c.strip()]
+        
+        # Create and store patient context
+        patient_context = PatientContext(
+            patient_id=session_id,
+            discharge_diagnosis=diagnosis,
+            medications=medications,
+            restrictions=restrictions,
+            follow_up_date=follow_up_date,
+            emergency_contacts=emergency_contacts
+        )
+        
+        set_patient_context(session_id, patient_context)
+        
+        return f"""
+✅ Thank you! I've recorded your information:
+
+{patient_context.to_context_string()}
+
+I'm ready to answer your questions! You can ask me about:
+- 💊 Your medications (dosing, side effects, interactions)
+- 🤒 Symptoms you're experiencing
+- 🍎 Diet and nutrition
+- 🚶 Activity restrictions
+- 🩹 Wound care
+- 📅 Follow-up care
+
+What would you like to know?
+"""
+    
+    except Exception as e:
+        return f"""
+❌ I had trouble understanding your information. Please try again using this format:
+
+Diagnosis: Your condition
+Medications: Med 1, Med 2
+Restrictions: Restriction 1, Restriction 2
+Follow-up Date: YYYY-MM-DD
+
+Example:
+Diagnosis: Type 2 Diabetes
+Medications: Metformin 500mg twice daily
+Restrictions: Limit sugar intake
+Follow-up Date: 2025-12-01
+"""
+
+
+# ============================================================================
+# ADK WEB UI CONFIGURATION
+# ============================================================================
+
+# Configure the Web UI
+ui_config = web_ui.WebUIConfig(
+    app_name="MedQuery AI",
+    app_description="Your personal medical assistant for post-discharge questions",
+    agent=medquery_agent,
+    theme=web_ui.Theme(
+        primary_color="#667eea",
+        secondary_color="#764ba2",
+        background_color="#f8f9fa",
+        text_color="#333333"
+    ),
+    welcome_message="""
+# 🏥 Welcome to MedQuery AI
+
+I'm your personal medical assistant, here to help you understand your discharge instructions and answer any questions about your recovery.
+
+**Before we begin**, please provide your discharge information in the following format:
+
+```
+Diagnosis: [Your diagnosis]
+Medications: [Medication 1, Medication 2, ...]
+Restrictions: [Any restrictions]
+Follow-up Date: [YYYY-MM-DD]
+Emergency Contacts: [Contact information]
+```
+
+**Example:**
+```
+Diagnosis: Type 2 Diabetes
+Medications: Metformin 500mg twice daily, Lisinopril 10mg daily
+Restrictions: Limit sugar intake, Monitor blood glucose daily
+Follow-up Date: 2025-12-01
+Emergency Contacts: Dr. Smith: 555-1234
+```
+
+Once I have your information, I can provide personalized answers to your questions! 😊
+
+---
+
+⚠️ **Important:** This is an educational tool only. For emergencies, call 911. For medical advice, always consult your healthcare provider.
+""",
+    placeholder_text="Type your question here...",
+    enable_history=True,
+    enable_feedback=True,
+    max_history_messages=50
+)
+
+
+# ============================================================================
+# ENHANCED FEATURES (Optional)
+# ============================================================================
+
+# Add conversation starters
+CONVERSATION_STARTERS = [
+    "Can I eat [specific food] with my condition?",
+    "When should I take my medications?",
+    "What are normal vs. concerning symptoms?",
+    "When can I return to normal activities?",
+    "How should I care for my surgical wound?",
+    "What should I do if I miss a dose?"
+]
+
+
+# Add example patient profiles for quick testing
+EXAMPLE_PROFILES = {
+    "diabetes": """
+Diagnosis: Type 2 Diabetes
+Medications: Metformin 500mg twice daily, Lisinopril 10mg daily
+Restrictions: Limit sugar intake, Monitor blood glucose, Check feet daily
+Follow-up Date: 2025-12-15
+Emergency Contacts: Dr. Johnson: 555-0123
+""",
+    "surgery": """
+Diagnosis: Status post knee replacement surgery
+Medications: Ibuprofen 400mg every 6 hours, Aspirin 81mg daily
+Restrictions: No weight bearing on left leg for 2 weeks, No driving
+Follow-up Date: 2025-12-10
+Emergency Contacts: Orthopedic Clinic: 555-0456
+""",
+    "heart": """
+Diagnosis: Congestive Heart Failure
+Medications: Furosemide 40mg daily, Carvedilol 25mg twice daily, Lisinopril 20mg daily
+Restrictions: Low sodium diet (<2000mg/day), Daily weight monitoring, Fluid restriction
+Follow-up Date: 2025-11-25
+Emergency Contacts: Cardiology Clinic: 555-0789, Dr. Chen: 555-0790
+"""
+}
+
+
+# ============================================================================
+# RUN THE APPLICATION
+# ============================================================================
+
+if __name__ == "__main__":
+    print("🏥 Starting MedQuery AI with Google ADK Web UI...")
+    print("=" * 60)
+    print()
+    print("📋 Quick Test Profiles:")
+    for name, profile in EXAMPLE_PROFILES.items():
+        print(f"\n{name.upper()}:")
+        print(profile)
+    print()
+    print("=" * 60)
+    print("🚀 Launching Web UI...")
+    print("🌐 Open your browser to the URL shown below")
+    print("=" * 60)
+    print()
+    
+    # Launch the ADK Web UI
+    # This automatically creates a web server and opens the interface
+    web_ui.run(ui_config)
+    
+    # Alternative: If you want more control over the server
+    # web_ui.run(
+    #     ui_config,
+    #     host="0.0.0.0",
+    #     port=8080,
+    #     debug=True
+    # )
